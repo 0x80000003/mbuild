@@ -690,6 +690,97 @@ def set_msvc_compilers(env,msvc_tools_root):
     env['msvc_compilers']['x86-64']['ia32'] = x64_to_x86
     env['msvc_compilers']['x86-64']['x86-64'] = x64_to_x64
 
+def _set_msvs_dev18(env, x64_host, x64_target, regv=None): # msvs 2026
+    versions = ['Enterprise', 'Professional', 'Community']
+    
+    progfi = 'C:/Program Files (x86)'
+    if regv:
+        prefix = regv
+    else:
+        prefix = 'C:/Program Files/Microsoft Visual Studio/18'
+    
+    if x64_target:
+        tgt = 'x64'
+    else:
+        tgt = 'x86'
+    
+    found = False
+    for v in versions:
+        p = _ijoin(prefix,v)
+        if os.path.exists(p):
+            found = True
+            break
+    if not found:
+        die('Could not find MSVS 2026 directory')
+    vprefix = p
+    
+    winkit10 = progfi + '/Windows Kits/10'
+    
+    winkit10version, winkit10complete = _get_winkit10_version(env,winkit10)
+    if winkit10complete == False:
+        die('need a complete winkit10 for MSVS 2026 (dev 18)')
+    env['rc_winkit'] = winkit10
+    
+    msvc_version_file = vprefix + '/VC/Auxiliary/Build/Microsoft.VCToolsVersion.default.txt'
+    msvc_tools_version = _get_first_line_from_file(msvc_version_file).strip()
+    msvc_tools_root = vprefix + '/VC/Tools/MSVC/' + msvc_tools_version
+    
+    # Environment variables
+    set_env('VSINSTALLDIR', vprefix)
+    set_env('VCINSTALLDIR', vprefix + '/VC')
+    set_env('VCToolsInstallDir', msvc_tools_root)
+    
+    # Include paths
+    i = []
+    add_env(i, '{}/include'.format(msvc_tools_root))
+    add_env(i, '{}/atlmfc/include'.format(msvc_tools_root))
+    add_env(i, '{}/Include/{}/ucrt'.format(winkit10, winkit10version))
+    add_env(i, '{}/Include/{}/um'.format(winkit10, winkit10version))
+    add_env(i, '{}/Include/{}/shared'.format(winkit10, winkit10version))
+    add_env(i, '{}/Include/{}/winrt'.format(winkit10, winkit10version))
+    add_env(i, '{}/Include/{}/cppwinrt'.format(winkit10, winkit10version))
+    set_env_list('INCLUDE', i)
+    
+    # Library paths
+    lib = []
+    if x64_target:
+        add_env(lib, '{}/lib/{}'.format(msvc_tools_root, tgt))
+        add_env(lib, '{}/atlmfc/lib/{}'.format(msvc_tools_root, tgt))
+        add_env(lib, '{}/Lib/{}/um/{}'.format(winkit10, winkit10version, tgt))
+        add_env(lib, '{}/Lib/{}/ucrt/{}'.format(winkit10, winkit10version, tgt))
+    else:
+        add_env(lib, '{}/lib/{}'.format(msvc_tools_root, tgt))
+        add_env(lib, '{}/atlmfc/lib/{}'.format(msvc_tools_root, tgt))
+        add_env(lib, '{}/Lib/{}/um/{}'.format(winkit10, winkit10version, tgt))
+        add_env(lib, '{}/Lib/{}/ucrt/{}'.format(winkit10, winkit10version, tgt))
+    set_env_list('LIB', lib)
+    
+    # PATH
+    path = []
+    if x64_host and x64_target:
+        add_env(path, '{}/bin/Hostx64/x64'.format(msvc_tools_root))
+    elif x64_host and not x64_target:
+        add_env(path, '{}/bin/Hostx64/x86'.format(msvc_tools_root))
+    elif not x64_host and x64_target:
+        add_env(path, '{}/bin/Hostx86/x64'.format(msvc_tools_root))
+    else:
+        add_env(path, '{}/bin/Hostx86/x86'.format(msvc_tools_root))
+    
+    add_env(path, '{}/Common7/IDE'.format(vprefix))
+    add_env(path, '{}/Common7/Tools'.format(vprefix))
+    add_env(path, '{}/bin/{}'.format(winkit10, tgt))
+    add_env(path, '{}/bin/{}/{}'.format(winkit10, winkit10version, tgt))
+    
+    # LIBPATH 
+    libpath = []
+    add_env(libpath, '{}/lib/{}'.format(msvc_tools_root, tgt))
+    add_env(libpath, '{}/atlmfc/lib/{}'.format(msvc_tools_root, tgt))
+    set_env_list('LIBPATH', libpath)
+    
+    add_to_front_list('PATH', path)
+    
+    return vprefix + "/VC"
+
 def _set_msvs_dev17(env, x64_host, x64_target, regv=None): # msvs 2022
     versions = ['Enterprise', 'Professional', 'Community']
     
@@ -1489,11 +1580,45 @@ def _read_registry(root,key,value):
 def pick_compiler(env):
     if env['msvs_version']:
         if int(env['msvs_version']) >= 15:
-            compilers_dict = env['msvc_compilers']
-            return compilers_dict[env['build_cpu']][env['host_cpu']]
+            if 'msvc_compilers' in env:
+                compilers_dict = env['msvc_compilers']
+                return compilers_dict[env['build_cpu']][env['host_cpu']]
     return _pick_compiler_until_dev14(env)
-    
+
 def _pick_compiler_until_dev14(env):
+    import os
+    
+    # Check if this is modern VS (2017+) by looking for the Tools/MSVC directory
+    vc_dir = env['vc_dir']
+    tools_msvc_dir = os.path.join(vc_dir, 'Tools', 'MSVC')
+    
+    if os.path.exists(tools_msvc_dir):
+        # Modern VS structure: VC/Tools/MSVC/{version}/bin/Hostx64/x64/
+        msvc_version_file = os.path.join(vc_dir, 'Auxiliary', 'Build', 'Microsoft.VCToolsVersion.default.txt')
+        
+        try:
+            with open(msvc_version_file, 'r') as f:
+                msvc_ver = f.read().strip()
+        except:
+            die("Could not read MSVC version file: {}".format(msvc_version_file))
+        
+        msvc_tools_root = os.path.join(vc_dir, 'Tools', 'MSVC', msvc_ver)
+        
+        # Build the correct path based on build and host CPU
+        if env['build_cpu'] == 'ia32' and env['host_cpu'] == 'ia32':
+            toolchain = os.path.join(msvc_tools_root, 'bin', 'Hostx86', 'x86', '')
+        elif env['build_cpu'] == 'ia32' and env['host_cpu'] == 'x86-64':
+            toolchain = os.path.join(msvc_tools_root, 'bin', 'Hostx86', 'x64', '')
+        elif env['build_cpu'] == 'x86-64' and env['host_cpu'] == 'x86-64':
+            toolchain = os.path.join(msvc_tools_root, 'bin', 'Hostx64', 'x64', '')
+        elif env['build_cpu'] == 'x86-64' and env['host_cpu'] == 'ia32':
+            toolchain = os.path.join(msvc_tools_root, 'bin', 'Hostx64', 'x86', '')
+        elif env['compiler'] == 'ms':
+            die("Unknown build/target combination. build cpu=%s, host_cpu=%s" % (env['build_cpu'], env['host_cpu']))
+        
+        return toolchain
+    
+    # VS 2015 and earlier use the old structure: VC/bin/amd64/
     if env['build_cpu'] == 'ia32' and env['host_cpu'] == 'ia32':
         toolchain = os.path.join(env['vc_dir'], 'bin', '')
     elif env['build_cpu'] == 'ia32' and env['host_cpu'] == 'x86-64':
@@ -1503,8 +1628,8 @@ def _pick_compiler_until_dev14(env):
     elif env['build_cpu'] == 'x86-64' and env['host_cpu'] == 'ia32':
         toolchain = os.path.join(env['vc_dir'], 'bin', '')
     elif env['compiler'] == 'ms':
-        die("Unknown build/target combination. build cpu=%s, " + 
-            "host_cpu=%s" % ( env['build_cpu'], env['host_cpu']))
+        die("Unknown build/target combination. build cpu=%s, host_cpu=%s" % (env['build_cpu'], env['host_cpu']))
+    
     return toolchain
 
 def _find_msvc_in_registry(env,version):
@@ -1634,6 +1759,8 @@ def set_msvs_env(env):
     elif i == 16:  # vs 2019
         vc = _set_msvs_dev16(env, x64_host, x64_target, vs_dir)
     elif i == 17:  # vs 2022
+        vc = _set_msvs_dev17(env, x64_host, x64_target, vs_dir)
+    elif i == 18: # vs 2026
         vc = _set_msvs_dev17(env, x64_host, x64_target, vs_dir)
     else:
         die("Unhandled MSVS version: " + env['msvs_version'])
