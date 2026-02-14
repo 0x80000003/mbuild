@@ -1761,7 +1761,7 @@ def set_msvs_env(env):
     elif i == 17:  # vs 2022
         vc = _set_msvs_dev17(env, x64_host, x64_target, vs_dir)
     elif i == 18: # vs 2026
-        vc = _set_msvs_dev17(env, x64_host, x64_target, vs_dir)
+        vc = _set_msvs_dev18(env, x64_host, x64_target, vs_dir)
     else:
         die("Unhandled MSVS version: " + env['msvs_version'])
 
